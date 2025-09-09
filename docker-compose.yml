@@ -1,0 +1,35 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./models:/app/models
+    environment:
+      - GIN_MODE=release
+    networks:
+      - owngpt-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "9090:9090"
+    depends_on:
+      - backend
+    networks:
+      - owngpt-network
+    restart: unless-stopped
+
+networks:
+  owngpt-network:
+    driver: bridge
+
+volumes:
+  models:
+    driver: local
