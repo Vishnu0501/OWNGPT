@@ -79,6 +79,47 @@ func createDockerfileHandler(c *gin.Context) {
 
 	log.Printf("Creating Dockerfile for model: %s", req.Model)
 
+	// Check if model is already running
+	modelMutex.RLock()
+	if currentModel.IsRunning && strings.Contains(currentModel.Name, strings.ToLower(req.Model)) {
+		modelMutex.RUnlock()
+		c.JSON(http.StatusOK, gin.H{
+			"message":        "Model is already running and ready",
+			"model":          req.Model,
+			"container_name": currentModel.Name,
+			"port":           currentModel.Port,
+			"already_exists": true,
+		})
+		return
+	}
+	modelMutex.RUnlock()
+
+	// Check if model container already exists but stopped
+	containerName := fmt.Sprintf("ollama-%s-container", strings.ToLower(req.Model))
+	if containerExists(containerName) {
+		log.Printf("Container %s already exists, starting it", containerName)
+		if err := startExistingContainer(containerName); err == nil {
+			modelMutex.Lock()
+			currentModel = ModelContainer{
+				Name:      containerName,
+				Port:      "11434",
+				IsRunning: true,
+			}
+			modelMutex.Unlock()
+
+			if err := waitForModelReady(containerName, 30*time.Second); err == nil {
+				c.JSON(http.StatusOK, gin.H{
+					"message":        "Existing model container started successfully",
+					"model":          req.Model,
+					"container_name": containerName,
+					"port":           "11434",
+					"already_exists": true,
+				})
+				return
+			}
+		}
+	}
+
 	// Stop current model if running
 	stopCurrentModel()
 
@@ -107,7 +148,7 @@ func createDockerfileHandler(c *gin.Context) {
 	}
 
 	// Run Docker container
-	containerName := fmt.Sprintf("%s-container", imageName)
+	containerName = fmt.Sprintf("%s-container", imageName)
 	port := "11434"
 	if err := runDockerContainer(imageName, containerName, port); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to run Docker container: %v", err)})
@@ -124,7 +165,7 @@ func createDockerfileHandler(c *gin.Context) {
 	modelMutex.Unlock()
 
 	// Wait for the model to be ready
-	if err := waitForModelReady(port, 60*time.Second); err != nil {
+	if err := waitForModelReady(containerName, 300*time.Second); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Model failed to start: %v", err)})
 		return
 	}
@@ -150,13 +191,13 @@ func chatHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "No model is currently running. Please create a model first."})
 		return
 	}
-	port := currentModel.Port
+	containerName := currentModel.Name
 	modelMutex.RUnlock()
 
 	log.Printf("Sending message to model: %s", req.Message)
 
 	// Send message to Ollama
-	response, err := sendToOllama(req.Message, port)
+	response, err := sendToOllama(req.Message, containerName)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, ChatResponse{
 			Error: fmt.Sprintf("Failed to get response from model: %v", err),
@@ -183,19 +224,35 @@ func healthHandler(c *gin.Context) {
 func generateDockerfile(model string) string {
 	return fmt.Sprintf(`FROM ollama/ollama:latest
 
+# Install curl for health checks
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
 # Expose Ollama port
 EXPOSE 11434
 
-# Create a script to pull the model and start the server
+# Create startup script
 RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "Starting Ollama server..."\n\
 ollama serve &\n\
+OLLAMA_PID=$!\n\
+\n\
+echo "Waiting for Ollama to be ready..."\n\
 sleep 10\n\
+while ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; do\n\
+    sleep 2\n\
+    echo "Still waiting for Ollama..."\n\
+done\n\
+\n\
+echo "Ollama is ready, pulling model: %s"\n\
 ollama pull %s\n\
-wait' > /start.sh && chmod +x /start.sh
+\n\
+echo "Model %s is ready!"\n\
+wait $OLLAMA_PID' > /start.sh && chmod +x /start.sh
 
-# Start Ollama and pull the model
-CMD ["/start.sh"]
-`, strings.ToLower(model))
+# Use bash to run the script
+CMD ["/bin/bash", "/start.sh"]
+`, strings.ToLower(model), strings.ToLower(model), strings.ToLower(model))
 }
 
 func buildDockerImage(contextPath, imageName string) error {
@@ -209,9 +266,22 @@ func runDockerContainer(imageName, containerName, port string) error {
 	// Remove existing container if it exists
 	exec.Command("docker", "rm", "-f", containerName).Run()
 
-	// Run new container
-	cmd := exec.Command("docker", "run", "-d", "--name", containerName, "-p", fmt.Sprintf("%s:11434", port), imageName)
-	return cmd.Run()
+	// Run new container connected to the same network as the backend
+	cmd := exec.Command("docker", "run", "-d", "--name", containerName,
+		"--network", "owngpt_owngpt-network",
+		"-p", fmt.Sprintf("%s:11434", port),
+		imageName)
+
+	// Capture both stdout and stderr for debugging
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	fmt.Printf("Running command: %v", cmd.Args)
+	err := cmd.Run()
+	if err != nil {
+		fmt.Printf("Docker run failed: %v", err)
+	}
+	return err
 }
 
 func stopCurrentModel() {
@@ -226,12 +296,13 @@ func stopCurrentModel() {
 	}
 }
 
-func waitForModelReady(port string, timeout time.Duration) error {
-	client := &http.Client{Timeout: 5 * time.Second}
+func waitForModelReady(containerName string, timeout time.Duration) error {
+	client := &http.Client{Timeout: 50 * time.Second}
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
-		resp, err := client.Get(fmt.Sprintf("http://localhost:%s/api/tags", port))
+		// Use container name for internal Docker networking
+		resp, err := client.Get(fmt.Sprintf("http://%s:11434/api/tags", containerName))
 		if err == nil && resp.StatusCode == http.StatusOK {
 			resp.Body.Close()
 			log.Println("Model is ready")
@@ -246,13 +317,29 @@ func waitForModelReady(port string, timeout time.Duration) error {
 	return fmt.Errorf("model failed to become ready within %v", timeout)
 }
 
-func sendToOllama(message, port string) (string, error) {
-	client := &http.Client{Timeout: 120 * time.Second}
+func containerExists(containerName string) bool {
+	cmd := exec.Command("docker", "ps", "-a", "--format", "{{.Names}}")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
 
-	// Get the current model name from container
-	modelMutex.RLock()
-	containerName := currentModel.Name
-	modelMutex.RUnlock()
+	containers := strings.Split(string(output), "\n")
+	for _, container := range containers {
+		if strings.TrimSpace(container) == containerName {
+			return true
+		}
+	}
+	return false
+}
+
+func startExistingContainer(containerName string) error {
+	cmd := exec.Command("docker", "start", containerName)
+	return cmd.Run()
+}
+
+func sendToOllama(message, containerName string) (string, error) {
+	client := &http.Client{Timeout: 300 * time.Second}
 
 	// Extract model name from container name
 	modelName := strings.TrimSuffix(strings.TrimPrefix(containerName, "ollama-"), "-container")
@@ -268,7 +355,8 @@ func sendToOllama(message, port string) (string, error) {
 		return "", err
 	}
 
-	url := fmt.Sprintf("http://localhost:%s/api/generate", port)
+	// Use container name for internal Docker networking
+	url := fmt.Sprintf("http://%s:11434/api/generate", containerName)
 	resp, err := client.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return "", err
