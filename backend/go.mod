@@ -1,4 +1,4 @@
-module owngpt-backend
+module owngpt
 
 go 1.21
 

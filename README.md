@@ -5,7 +5,10 @@ A containerized chatbot application that allows you to run various AI models loc
 ## 🚀 Features
 
 - **Dynamic Model Loading**: Create and run any Ollama model on-demand
-- **Modern UI**: Beautiful React-based chat interface
+- **Modern UI**: Beautiful React-based chat interface with model management
+- **Interactive Chat**: Chat with any running model through an intuitive interface
+- **Custom Model Support**: Pull and create any model from Ollama library with text input
+- **Model Management**: Easy model selection, installation, and switching
 - **Containerized**: Everything runs in Docker containers for easy deployment
 - **RESTful API**: Clean Go backend with Gin framework
 - **Real-time Chat**: Seamless conversation flow with AI models
@@ -44,15 +47,31 @@ A containerized chatbot application that allows you to run various AI models loc
 
 ## 📖 Usage
 
-1. **Create a Model**:
-   - Enter a model name (e.g., "mistral", "llama2", "codellama")
-   - Click "Create Model"
+### Model Management
+1. **Browse Available Models**: Switch to the "Available Models" tab to see popular models
+2. **Create Custom Models**: 
+   - Type any model name in the custom model input field (e.g., `llama3`, `gemma`, `phi3`, `qwen`)
+   - Use the suggestion tags for quick selection of popular models
+   - Press Enter or click "Pull & Create" to install the model
    - Wait for the model to download and start (this may take a few minutes)
+3. **View Installed Models**: Switch to "Installed Models" tab to see all your models and their status
+4. **Quick Chat**: Click the "Quick Chat" button in the header when models are running
 
-2. **Start Chatting**:
-   - Once the model is ready, type your message
-   - Press Enter or click "Send"
-   - Enjoy your conversation with the AI!
+### Chat Interface
+1. **Start Chat**: Click "💬 Chat Now" on any running model from the installed models list
+2. **Switch Models**: Use the "🔧 Switch Model" button to go back to model selection
+3. **Clear Chat**: Use "🗑️ Clear Chat" to start a fresh conversation
+4. **Model Status**: See the current model name and running status in the header
+
+### Supported Models
+You can install any model available in the Ollama library, including:
+- **llama3**: Latest Llama model from Meta
+- **gemma**: Google's Gemma models
+- **phi3**: Microsoft's Phi-3 models  
+- **qwen**: Alibaba's Qwen models
+- **codellama**: Code-specialized Llama model
+- **mistral**: Mistral AI models
+- And many more! Just type the model name in the custom input field.
 
 ## 🔧 API Endpoints
 
